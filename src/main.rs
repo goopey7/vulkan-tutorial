@@ -29,6 +29,7 @@ use vulkanalia::vk::
 	DebugUtilsMessageTypeFlagsEXT,
 	DebugUtilsMessageSeverityFlagsEXT,
 	KhrSurfaceExtension,
+	KhrSwapchainExtension,
 };
 
 
@@ -36,6 +37,7 @@ const PORTABILITY_MACOS_VERSION: Version = Version::new(1, 3, 216);
 const VALIDATION_ENABLED: bool = cfg!(debug_assertions);
 const VALIDATION_LAYER: vk::ExtensionName =
 	vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
+const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[vk::KHR_SWAPCHAIN_EXTENSION.name];
 
 fn main() -> Result<()>
 {
@@ -265,6 +267,26 @@ impl QueueFamilyIndices
 #[derive(Debug, Error)]
 #[error("Missing {0}")]
 pub struct SuitabilityError(&'static str);
+
+unsafe fn check_physical_device_extensions(
+	instance: &Instance,
+	physical_device: vk::PhysicalDevice
+	) -> Result<()>
+{
+	let extensions = instance
+		.enumerate_device_extension_properties(physical_device, None)?
+		.iter()
+		.map(|extension| extension.extension_name)
+		.collect::<HashSet<_>>();
+	if DEVICE_EXTENSIONS.iter().all(|extension| extensions.contains(extension))
+	{
+		Ok(())
+	}
+	else
+	{
+		Err(anyhow!(SuitabilityError("Missing required device extensions")))
+	}
+}
 
 unsafe fn check_physical_device(
 	instance: &Instance,
