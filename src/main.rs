@@ -352,7 +352,10 @@ unsafe fn create_logical_device(
 		vec![]
 	};
 
-	let mut extensions = vec![];
+	let mut extensions = DEVICE_EXTENSIONS
+		.iter()
+		.map(|name| name.as_ptr())
+		.collect::<Vec<_>>();
 
 	// Since vulkan on macOS doesn't conform to spec
 	if cfg!(target_os = "macos") && entry.version()? >= PORTABILITY_MACOS_VERSION
