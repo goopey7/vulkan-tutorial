@@ -332,6 +332,18 @@ fn get_swapchain_surface_format(formats: &[vk::SurfaceFormatKHR]) -> vk::Surface
 		.unwrap_or_else(|| formats[0])
 }
 
+fn get_swapchain_present_mode(present_modes: &[vk::PresentModeKHR]) -> vk::PresentModeKHR
+{
+	present_modes
+		.iter()
+		.cloned()
+		.find(|mode|
+			{
+				*mode == vk::PresentModeKHR::MAILBOX //triple buffering
+			})
+		.unwrap_or(vk::PresentModeKHR::FIFO)
+}
+
 unsafe fn check_physical_device(
 	instance: &Instance,
 	physical_device: vk::PhysicalDevice,
