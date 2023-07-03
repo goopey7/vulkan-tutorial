@@ -23,7 +23,13 @@ use std::os::raw::c_void;
 
 use thiserror::Error;
 
-use vulkanalia::vk::{ExtDebugUtilsExtension, DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessageSeverityFlagsEXT};
+use vulkanalia::vk::
+{
+	ExtDebugUtilsExtension,
+	DebugUtilsMessageTypeFlagsEXT,
+	DebugUtilsMessageSeverityFlagsEXT,
+	KhrSurfaceExtension,
+};
 
 
 const PORTABILITY_MACOS_VERSION: Version = Version::new(1, 3, 216);
@@ -88,7 +94,8 @@ impl App
 		let entry = Entry::new(loader).map_err(|error| anyhow!(error))?;
 		let mut data = AppData::default();
 		let instance = create_instance(window, &entry, &mut data)?;
-		select_physical_device(&instance, &mut data);
+		data.surface = vk_window::create_surface(&instance, &window, &window)?;
+		select_physical_device(&instance, &mut data)?;
 		let device = create_logical_device(&entry, &instance, &mut data)?;
 		Ok(Self {entry, instance, data, device})
 	}
@@ -103,6 +110,7 @@ impl App
 	unsafe fn destroy(&mut self)
 	{
 		self.device.destroy_device(None);
+		self.instance.destroy_surface_khr(self.data.surface, None);
 		if VALIDATION_ENABLED
 		{
 			self.instance.destroy_debug_utils_messenger_ext(self.data.messenger, None);
@@ -118,6 +126,8 @@ struct AppData
 	messenger: vk::DebugUtilsMessengerEXT,
 	physical_device: vk::PhysicalDevice,	
 	graphics_queue: vk::Queue,
+	surface: vk::SurfaceKHR,
+	presentation_queue: vk::Queue,
 }
 
 unsafe fn create_instance(window: &Window, entry: &Entry, data: &mut AppData) -> Result<Instance>
@@ -208,6 +218,7 @@ unsafe fn create_instance(window: &Window, entry: &Entry, data: &mut AppData) ->
 struct QueueFamilyIndices
 {
 	graphics: u32,
+	presentation: u32,
 }
 
 impl QueueFamilyIndices
@@ -224,13 +235,29 @@ impl QueueFamilyIndices
 			.position(|properties| properties.queue_flags.contains(vk::QueueFlags::GRAPHICS))
 			.map(|index| index as u32);
 
-		if let Some(graphics) = graphics
+		let mut presentation = None;
+
+		for(index, properties) in properties.iter().enumerate()
 		{
-			Ok(Self {graphics})
+			if instance.get_physical_device_surface_support_khr
+				(
+					physical_device,
+					index as u32,
+					data.surface
+				)?
+			{
+				presentation = Some(index as u32);
+				break;
+			}
+		}
+
+		if let (Some(graphics), Some(presentation)) = (graphics, presentation)
+		{
+			Ok(Self {graphics, presentation})
 		}
 		else
 		{
-			Err(anyhow!(SuitabilityError("Missing graphics queue family")))
+			Err(anyhow!(SuitabilityError("Missing required queue families")))
 		}
 	}
 }
@@ -279,11 +306,20 @@ unsafe fn create_logical_device(
 	) -> Result<Device>
 {
 	let indices = QueueFamilyIndices::get(instance, data, data.physical_device)?;
-	let queue_priorities = &[1.0];
 
-	let queue_info = vk::DeviceQueueCreateInfo::builder()
-		.queue_family_index(indices.graphics)
-		.queue_priorities(queue_priorities);
+	let mut unique_indices = HashSet::new();
+	unique_indices.insert(indices.graphics);
+	unique_indices.insert(indices.presentation);
+	
+	let queue_priorities = &[1.0];
+	let queue_infos = unique_indices
+		.iter()
+		.map(|index|
+			{
+				vk::DeviceQueueCreateInfo::builder()
+					.queue_family_index(*index)
+					.queue_priorities(queue_priorities)
+			}).collect::<Vec<_>>();
 
 	let layers = if VALIDATION_ENABLED
 	{
@@ -304,15 +340,15 @@ unsafe fn create_logical_device(
 
 	let features = vk::PhysicalDeviceFeatures::builder();
 
-	let queue_infos = &[queue_info];
 	let info = vk::DeviceCreateInfo::builder()
-		.queue_create_infos(queue_infos)
-		.enabled_extension_names(&extensions)
+		.queue_create_infos(&queue_infos)
 		.enabled_layer_names(&layers)
-		.enabled_features(&features);
+		.enabled_features(&features)
+		.enabled_extension_names(&extensions);
 
 	let device = instance.create_device(data.physical_device, &info, None)?;
 	data.graphics_queue = device.get_device_queue(indices.graphics, 0);
+	data.presentation_queue = device.get_device_queue(indices.presentation, 0);
 	Ok(device)
 }
 
