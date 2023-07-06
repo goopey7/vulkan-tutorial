@@ -574,11 +574,48 @@ unsafe fn create_swapchain_image_views(
 	Ok(())
 }
 
+unsafe fn create_shader_module(
+	device: &Device,
+	bytecode: &[u8],
+	) -> Result<vk::ShaderModule>
+{
+	let vec = Vec::<u8>::from(bytecode);
+	let (prefix, code, suffix) = bytecode.align_to::<u32>();
+	if !prefix.is_empty() || !suffix.is_empty()
+	{
+		return Err(anyhow!("Shader bytecode not properly aligned"));
+	}
+
+	let info = vk::ShaderModuleCreateInfo::builder()
+		.code_size(bytecode.len())
+		.code(code);
+
+	Ok(device.create_shader_module(&info, None)?)
+}
+
 unsafe fn create_pipeline(
 	device: &Device,
 	data: &mut AppData,
 	) -> Result<()>
 {
+	let vert = include_bytes!("../shaders/vert.spv");
+	let frag = include_bytes!("../shaders/frag.spv");
+
+	let vert_sm = create_shader_module(device, vert)?;
+	let frag_sm = create_shader_module(device, frag)?;
+
+	let vert_stage = vk::PipelineShaderStageCreateInfo::builder()
+		.stage(vk::ShaderStageFlags::VERTEX)
+		.module(vert_sm)
+		.name(b"main\0");
+
+	let frag_stage = vk::PipelineShaderStageCreateInfo::builder()
+		.stage(vk::ShaderStageFlags::FRAGMENT)
+		.module(frag_sm)
+		.name(b"main\0");
+
+	device.destroy_shader_module(vert_sm, None);
+	device.destroy_shader_module(frag_sm, None);
 	Ok(())
 }
 
