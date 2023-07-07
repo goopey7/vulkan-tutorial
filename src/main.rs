@@ -114,6 +114,7 @@ impl App
 	/// Destroys our Vulkan app.
 	unsafe fn destroy(&mut self)
 	{
+		self.device.destroy_pipeline(self.data.pipeline, None);
 		self.device.destroy_render_pass(self.data.render_pass, None);
 		self.device.destroy_pipeline_layout(self.data.pipeline_layout, None);
 		self.data.swapchain_image_views
@@ -146,6 +147,7 @@ struct AppData
 	swapchain_image_views: Vec<vk::ImageView>,
 	render_pass: vk::RenderPass,
 	pipeline_layout: vk::PipelineLayout,
+	pipeline: vk::Pipeline,
 }
 
 unsafe fn create_instance(window: &Window, entry: &Entry, data: &mut AppData) -> Result<Instance>
@@ -723,6 +725,27 @@ unsafe fn create_pipeline(
 
 	let dynamic_state = vk::PipelineDynamicStateCreateInfo::builder()
 		.dynamic_states(dynamic_states);
+
+	let stages = &[vert_stage, frag_stage];
+	
+	let info = vk::GraphicsPipelineCreateInfo::builder()
+		.vertex_input_state(&vertex_input_state)
+		.input_assembly_state(&input_assembly_state)
+		.viewport_state(&viewport_state)
+		.rasterization_state(&rasterization_state)
+		.multisample_state(&multisample_state)
+		.color_blend_state(&color_blend_state)
+		.layout(data.pipeline_layout)
+		.render_pass(data.render_pass)
+		.subpass(0)
+		.base_pipeline_handle(vk::Pipeline::null())
+		.base_pipeline_index(-1);
+
+	data.pipeline = device.create_graphics_pipelines(
+		vk::PipelineCache::null(),
+		&[info],
+		None
+		)?.0[0];
 
 	device.destroy_shader_module(vert_sm, None);
 	device.destroy_shader_module(frag_sm, None);
