@@ -662,7 +662,7 @@ unsafe fn create_pipeline(
 
 	let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::builder()
 		.topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-		.primitive_restart_enable(true);
+		.primitive_restart_enable(false);
 
 	let viewport = vk::Viewport::builder()
 		.x(0.0)
@@ -729,6 +729,8 @@ unsafe fn create_pipeline(
 	let stages = &[vert_stage, frag_stage];
 	
 	let info = vk::GraphicsPipelineCreateInfo::builder()
+		.stage_count(2)
+		.stages(stages)
 		.vertex_input_state(&vertex_input_state)
 		.input_assembly_state(&input_assembly_state)
 		.viewport_state(&viewport_state)
