@@ -113,6 +113,7 @@ impl App
 	/// Destroys our Vulkan app.
 	unsafe fn destroy(&mut self)
 	{
+		self.device.destroy_pipeline_layout(self.data.pipeline_layout, None);
 		self.data.swapchain_image_views
 			.iter()
 			.for_each(|image_view| self.device.destroy_image_view(*image_view, None));
@@ -141,6 +142,7 @@ struct AppData
 	swapchain_format: vk::Format,
 	swapchain_extent: vk::Extent2D,
 	swapchain_image_views: Vec<vk::ImageView>,
+	pipeline_layout: vk::PipelineLayout,
 }
 
 unsafe fn create_instance(window: &Window, entry: &Entry, data: &mut AppData) -> Result<Instance>
@@ -614,6 +616,74 @@ unsafe fn create_pipeline(
 		.module(frag_sm)
 		.name(b"main\0");
 
+	let vertex_input_state = vk::PipelineVertexInputStateCreateInfo::builder();
+
+	let input_assembly_state = vk::PipelineInputAssemblyStateCreateInfo::builder()
+		.topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+		.primitive_restart_enable(true);
+
+	let viewport = vk::Viewport::builder()
+		.x(0.0)
+		.y(0.0)
+		.width(data.swapchain_extent.width as f32)
+		.height(data.swapchain_extent.height as f32)
+		.min_depth(0.0)
+		.max_depth(1.0);
+
+	let scissor = vk::Rect2D::builder()
+		.offset(vk::Offset2D {x: 0, y:0 })
+		.extent(data.swapchain_extent);
+
+	let viewports = &[viewport];
+	let scissors = &[scissor];
+
+	let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
+		.viewports(viewports)
+		.scissors(scissors);
+
+	let rasterization_state = vk::PipelineRasterizationStateCreateInfo::builder()
+		.depth_clamp_enable(false)
+		.rasterizer_discard_enable(false)
+		.polygon_mode(vk::PolygonMode::FILL)
+		.line_width(1.0)
+		.cull_mode(vk::CullModeFlags::BACK)
+		.front_face(vk::FrontFace::CLOCKWISE)
+		.depth_bias_enable(false);
+
+	let multisample_state = vk::PipelineMultisampleStateCreateInfo::builder()
+		.sample_shading_enable(false)
+		.rasterization_samples(vk::SampleCountFlags::_1);
+
+	let attachment = vk::PipelineColorBlendAttachmentState::builder()
+		.color_write_mask(vk::ColorComponentFlags::all())
+		.blend_enable(false)
+		.src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+		.dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+		.color_blend_op(vk::BlendOp::ADD)
+		.src_alpha_blend_factor(vk::BlendFactor::ONE)
+		.dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+		.alpha_blend_op(vk::BlendOp::ADD);
+	let attachments = &[attachment];
+	let color_blend_state = vk::PipelineColorBlendStateCreateInfo::builder()
+		.logic_op_enable(false)
+		.logic_op(vk::LogicOp::COPY)
+		.attachments(attachments)
+		.blend_constants([0.0,0.0,0.0,0.0]);
+
+	let layout_info = vk::PipelineLayoutCreateInfo::builder();
+	data.pipeline_layout = device.create_pipeline_layout(&layout_info, None)?;
+
+	// causes configuration of these values to be ignored
+	// must be specified at draw time instead
+	// this way we don't have to recreate the pipeline to change them
+	let dynamic_states = &[
+		vk::DynamicState::VIEWPORT,
+		vk::DynamicState::LINE_WIDTH,
+	];
+
+	let dynamic_state = vk::PipelineDynamicStateCreateInfo::builder()
+		.dynamic_states(dynamic_states);
+
 	device.destroy_shader_module(vert_sm, None);
 	device.destroy_shader_module(frag_sm, None);
 	Ok(())
@@ -648,3 +718,4 @@ extern "system" fn debug_callback(
 
 	vk::FALSE
 }
+
