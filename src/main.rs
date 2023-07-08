@@ -37,6 +37,7 @@ const VALIDATION_ENABLED: bool = cfg!(debug_assertions);
 const VALIDATION_LAYER: vk::ExtensionName =
 	vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
 const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[vk::KHR_SWAPCHAIN_EXTENSION.name];
+const MAX_FRAME_IN_FLIGHT: usize = 2;
 
 fn main() -> Result<()>
 {
@@ -85,6 +86,7 @@ struct App
 	instance: Instance,
 	data: AppData,
 	device: Device,
+	frame: usize,
 }
 
 impl App
@@ -107,25 +109,37 @@ impl App
 		create_command_pool(&instance, &device, &mut data)?;
 		create_command_buffers(&device, &mut data)?;
 		create_sync_objects(&device, &mut data)?;
-		Ok(Self {entry, instance, data, device})
+		Ok(Self {entry, instance, data, device, frame: 0,})
 	}
 
 	/// Renders a frame for our Vulkan app.
 	unsafe fn render(&mut self, window: &Window) -> Result<()>
 	{
+		let in_flight_fence = self.data.in_flight_fences[self.frame];
+
+		self.device
+			.wait_for_fences(&[in_flight_fence], true, u64::max_value())?;
+
 		let image_index = self
 			.device
 			.acquire_next_image_khr(
 				self.data.swapchain,
 				u64::max_value(),
-				self.data.image_available_semaphore,
+				self.data.image_available_semaphore[self.frame],
 				vk::Fence::null(),
 				)?.0 as usize;
 
-		let wait_semaphores = &[self.data.image_available_semaphore];
+		let image_in_flight = self.data.images_in_flight[image_index];
+		if !image_in_flight.is_null()
+		{
+			self.device
+				.wait_for_fences(&[image_in_flight], true, u64::max_value())?;
+		}
+
+		let wait_semaphores = &[self.data.image_available_semaphore[self.frame]];
 		let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
 		let command_buffers = &[self.data.command_buffers[image_index]];
-		let signal_semaphores = &[self.data.render_finished_semaphore];
+		let signal_semaphores = &[self.data.render_finished_semaphore[self.frame]];
 
 		let submit_info = vk::SubmitInfo::builder()
 			.wait_semaphores(wait_semaphores)
@@ -133,7 +147,8 @@ impl App
 			.command_buffers(command_buffers)
 			.signal_semaphores(signal_semaphores);
 
-		self.device.queue_submit(self.data.graphics_queue, &[submit_info], vk::Fence::null())?;
+		self.device.reset_fences(&[in_flight_fence])?;
+		self.device.queue_submit(self.data.graphics_queue, &[submit_info], in_flight_fence)?;
 
 		let swapchains = &[self.data.swapchain];
 		let image_indices = &[image_index as u32];
@@ -144,14 +159,42 @@ impl App
 
 		self.device.queue_present_khr(self.data.presentation_queue, &present_info)?;
 
+		// this works fine
+		self.frame = self.frame;
+
+		/* --- Why do these crash?? --- */
+		/* --- Error: Shader bytecode not properly aligned --- */
+		//self.frame = self.frame + 0;
+		//self.frame = (self.frame + 1) % MAX_FRAME_IN_FLIGHT;
+
+		// this works fine
+		if self.frame == 0
+		{
+			self.frame = 1;
+		}
+		else if self.frame == 1
+		{
+			self.frame = 0;
+		}
+
 		Ok(())
 	}
 
 	/// Destroys our Vulkan app.
 	unsafe fn destroy(&mut self)
 	{
-		self.device.destroy_semaphore(self.data.render_finished_semaphore, None);
-		self.device.destroy_semaphore(self.data.image_available_semaphore, None);
+		self.data.in_flight_fences
+			.iter()
+			.for_each(|f| self.device.destroy_fence(*f, None));
+		self.data.images_in_flight
+			.iter()
+			.for_each(|f| self.device.destroy_fence(*f, None));
+		self.data.render_finished_semaphore
+			.iter()
+			.for_each(|s| self.device.destroy_semaphore(*s, None));
+		self.data.image_available_semaphore
+			.iter()
+			.for_each(|s| self.device.destroy_semaphore(*s, None));
 		self.device.destroy_command_pool(self.data.command_pool, None);
 		self.data.framebuffers
 			.iter()
@@ -193,8 +236,10 @@ struct AppData
 	framebuffers: Vec<vk::Framebuffer>,
 	command_pool: vk::CommandPool,
 	command_buffers: Vec<vk::CommandBuffer>,
-	image_available_semaphore: vk::Semaphore,
-	render_finished_semaphore: vk::Semaphore,
+	image_available_semaphore: Vec<vk::Semaphore>,
+	render_finished_semaphore: Vec<vk::Semaphore>,
+	in_flight_fences: Vec<vk::Fence>,
+	images_in_flight: Vec<vk::Fence>,
 }
 
 unsafe fn create_instance(window: &Window, entry: &Entry, data: &mut AppData) -> Result<Instance>
@@ -772,6 +817,7 @@ unsafe fn create_pipeline(
 	let layout_info = vk::PipelineLayoutCreateInfo::builder();
 	data.pipeline_layout = device.create_pipeline_layout(&layout_info, None)?;
 
+	/*
 	// causes configuration of these values to be ignored
 	// must be specified at draw time instead
 	// this way we don't have to recreate the pipeline to change them
@@ -782,11 +828,11 @@ unsafe fn create_pipeline(
 
 	let dynamic_state = vk::PipelineDynamicStateCreateInfo::builder()
 		.dynamic_states(dynamic_states);
+	*/
 
 	let stages = &[vert_stage, frag_stage];
 	
 	let info = vk::GraphicsPipelineCreateInfo::builder()
-		.stage_count(2)
 		.stages(stages)
 		.vertex_input_state(&vertex_input_state)
 		.input_assembly_state(&input_assembly_state)
@@ -796,9 +842,7 @@ unsafe fn create_pipeline(
 		.color_blend_state(&color_blend_state)
 		.layout(data.pipeline_layout)
 		.render_pass(data.render_pass)
-		.subpass(0)
-		.base_pipeline_handle(vk::Pipeline::null())
-		.base_pipeline_index(-1);
+		.subpass(0);
 
 	data.pipeline = device.create_graphics_pipelines(
 		vk::PipelineCache::null(),
@@ -842,7 +886,6 @@ unsafe fn create_command_pool(
 {
 	let indices = QueueFamilyIndices::get(instance, data, data.physical_device)?;
 	let info = vk::CommandPoolCreateInfo::builder()
-		.flags(vk::CommandPoolCreateFlags::empty())
 		.queue_family_index(indices.graphics);
 
 	data.command_pool = device.create_command_pool(&info, None)?;
@@ -864,11 +907,7 @@ unsafe fn create_command_buffers(
 
 	for (i, command_buffer) in data.command_buffers.iter().enumerate()
 	{
-		let inheritence = vk::CommandBufferInheritanceInfo::builder();
-
-		let info = vk::CommandBufferBeginInfo::builder()
-			.flags(vk::CommandBufferUsageFlags::empty())
-			.inheritance_info(&inheritence);
+		let info = vk::CommandBufferBeginInfo::builder();
 
 		device.begin_command_buffer(*command_buffer, &info)?;
 
@@ -906,9 +945,17 @@ unsafe fn create_sync_objects(
 	) -> Result<()>
 {
 	let semaphore_info = vk::SemaphoreCreateInfo::builder();
+	let fence_info = vk::FenceCreateInfo::builder()
+					.flags(vk::FenceCreateFlags::SIGNALED);
 
-	data.image_available_semaphore = device.create_semaphore(&semaphore_info, None)?;
-	data.render_finished_semaphore = device.create_semaphore(&semaphore_info, None)?;
+	for _ in 0..MAX_FRAME_IN_FLIGHT
+	{
+		data.image_available_semaphore.push(device.create_semaphore(&semaphore_info, None)?);
+		data.render_finished_semaphore.push(device.create_semaphore(&semaphore_info, None)?);
+		data.in_flight_fences.push(device.create_fence(&fence_info, None)?);
+	}
+
+	data.images_in_flight = data.swapchain_images.iter().map(|_| vk::Fence::null()).collect();
 
 	Ok(())
 }
