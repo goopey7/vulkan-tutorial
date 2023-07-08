@@ -37,7 +37,7 @@ const VALIDATION_ENABLED: bool = cfg!(debug_assertions);
 const VALIDATION_LAYER: vk::ExtensionName =
 	vk::ExtensionName::from_bytes(b"VK_LAYER_KHRONOS_validation");
 const DEVICE_EXTENSIONS: &[vk::ExtensionName] = &[vk::KHR_SWAPCHAIN_EXTENSION.name];
-const MAX_FRAME_IN_FLIGHT: usize = 2;
+const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 fn main() -> Result<()>
 {
@@ -125,7 +125,7 @@ impl App
 			.acquire_next_image_khr(
 				self.data.swapchain,
 				u64::max_value(),
-				self.data.image_available_semaphore[self.frame],
+				self.data.image_available_semaphores[self.frame],
 				vk::Fence::null(),
 				)?.0 as usize;
 
@@ -136,10 +136,10 @@ impl App
 				.wait_for_fences(&[image_in_flight], true, u64::max_value())?;
 		}
 
-		let wait_semaphores = &[self.data.image_available_semaphore[self.frame]];
+		let wait_semaphores = &[self.data.image_available_semaphores[self.frame]];
 		let wait_stages = &[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
 		let command_buffers = &[self.data.command_buffers[image_index]];
-		let signal_semaphores = &[self.data.render_finished_semaphore[self.frame]];
+		let signal_semaphores = &[self.data.render_finished_semaphores[self.frame]];
 
 		let submit_info = vk::SubmitInfo::builder()
 			.wait_semaphores(wait_semaphores)
@@ -159,7 +159,7 @@ impl App
 
 		self.device.queue_present_khr(self.data.presentation_queue, &present_info)?;
 
-		self.frame = (self.frame + 1) % MAX_FRAME_IN_FLIGHT;
+		self.frame = (self.frame + 1) % MAX_FRAMES_IN_FLIGHT;
 
 		Ok(())
 	}
@@ -173,10 +173,10 @@ impl App
 		self.data.images_in_flight
 			.iter()
 			.for_each(|f| self.device.destroy_fence(*f, None));
-		self.data.render_finished_semaphore
+		self.data.render_finished_semaphores
 			.iter()
 			.for_each(|s| self.device.destroy_semaphore(*s, None));
-		self.data.image_available_semaphore
+		self.data.image_available_semaphores
 			.iter()
 			.for_each(|s| self.device.destroy_semaphore(*s, None));
 		self.device.destroy_command_pool(self.data.command_pool, None);
@@ -220,8 +220,8 @@ struct AppData
 	framebuffers: Vec<vk::Framebuffer>,
 	command_pool: vk::CommandPool,
 	command_buffers: Vec<vk::CommandBuffer>,
-	image_available_semaphore: Vec<vk::Semaphore>,
-	render_finished_semaphore: Vec<vk::Semaphore>,
+	image_available_semaphores: Vec<vk::Semaphore>,
+	render_finished_semaphores: Vec<vk::Semaphore>,
 	in_flight_fences: Vec<vk::Fence>,
 	images_in_flight: Vec<vk::Fence>,
 }
@@ -932,10 +932,10 @@ unsafe fn create_sync_objects(
 	let fence_info = vk::FenceCreateInfo::builder()
 					.flags(vk::FenceCreateFlags::SIGNALED);
 
-	for _ in 0..MAX_FRAME_IN_FLIGHT
+	for _ in 0..MAX_FRAMES_IN_FLIGHT
 	{
-		data.image_available_semaphore.push(device.create_semaphore(&semaphore_info, None)?);
-		data.render_finished_semaphore.push(device.create_semaphore(&semaphore_info, None)?);
+		data.image_available_semaphores.push(device.create_semaphore(&semaphore_info, None)?);
+		data.render_finished_semaphores.push(device.create_semaphore(&semaphore_info, None)?);
 		data.in_flight_fences.push(device.create_fence(&fence_info, None)?);
 	}
 
