@@ -159,23 +159,7 @@ impl App
 
 		self.device.queue_present_khr(self.data.presentation_queue, &present_info)?;
 
-		// this works fine
-		self.frame = self.frame;
-
-		/* --- Why do these crash?? --- */
-		/* --- Error: Shader bytecode not properly aligned --- */
-		//self.frame = self.frame + 0;
-		//self.frame = (self.frame + 1) % MAX_FRAME_IN_FLIGHT;
-
-		// this works fine
-		if self.frame == 0
-		{
-			self.frame = 1;
-		}
-		else if self.frame == 1
-		{
-			self.frame = 0;
-		}
+		self.frame = (self.frame + 1) % MAX_FRAME_IN_FLIGHT;
 
 		Ok(())
 	}
@@ -678,7 +662,7 @@ unsafe fn create_shader_module(
 	bytecode: &[u8],
 	) -> Result<vk::ShaderModule>
 {
-	let vec = Vec::<u8>::from(bytecode);
+	let bytecode = Vec::<u8>::from(bytecode);
 	let (prefix, code, suffix) = bytecode.align_to::<u32>();
 	if !prefix.is_empty() || !suffix.is_empty()
 	{
