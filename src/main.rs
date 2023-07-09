@@ -236,7 +236,7 @@ impl App
 		self.data.framebuffers
 			.iter()
 			.for_each(|fb| self.device.destroy_framebuffer(*fb, None));
-		self.device.free_command_buffers(self.data.command_pool, &self.data.command_buffers);
+		self.device.free_command_buffers(self.data.graphics_command_pool, &self.data.command_buffers);
 		self.device.destroy_pipeline(self.data.pipeline, None);
 		self.device.destroy_pipeline_layout(self.data.pipeline_layout, None);
 		self.device.destroy_render_pass(self.data.render_pass, None);
@@ -267,7 +267,8 @@ impl App
 			.iter()
 			.for_each(|s| self.device.destroy_semaphore(*s, None));
 
-		self.device.destroy_command_pool(self.data.command_pool, None);
+		self.device.destroy_command_pool(self.data.graphics_command_pool, None);
+		self.device.destroy_command_pool(self.data.transfer_command_pool, None);
 		self.device.destroy_device(None);
 		self.instance.destroy_surface_khr(self.data.surface, None);
 
@@ -287,8 +288,9 @@ struct AppData
 	messenger: vk::DebugUtilsMessengerEXT,
 	physical_device: vk::PhysicalDevice,	
 	graphics_queue: vk::Queue,
-	surface: vk::SurfaceKHR,
 	presentation_queue: vk::Queue,
+	transfer_queue: vk::Queue,
+	surface: vk::SurfaceKHR,
 	swapchain: vk::SwapchainKHR,
 	swapchain_images: Vec<vk::Image>,
 	swapchain_format: vk::Format,
@@ -298,7 +300,8 @@ struct AppData
 	pipeline_layout: vk::PipelineLayout,
 	pipeline: vk::Pipeline,
 	framebuffers: Vec<vk::Framebuffer>,
-	command_pool: vk::CommandPool,
+	graphics_command_pool: vk::CommandPool,
+	transfer_command_pool: vk::CommandPool,
 	command_buffers: Vec<vk::CommandBuffer>,
 	image_available_semaphores: Vec<vk::Semaphore>,
 	render_finished_semaphores: Vec<vk::Semaphore>,
@@ -397,6 +400,7 @@ struct QueueFamilyIndices
 {
 	graphics: u32,
 	presentation: u32,
+	transfer: u32,
 }
 
 impl QueueFamilyIndices
@@ -408,6 +412,7 @@ impl QueueFamilyIndices
 		) -> Result<Self>
 	{
 		let properties = instance.get_physical_device_queue_family_properties(physical_device);
+
 		let graphics = properties
 			.iter()
 			.position(|properties| properties.queue_flags.contains(vk::QueueFlags::GRAPHICS))
@@ -429,9 +434,16 @@ impl QueueFamilyIndices
 			}
 		}
 
-		if let (Some(graphics), Some(presentation)) = (graphics, presentation)
+		let transfer = properties
+			.iter()
+			.position(|properties|
+				properties.queue_flags.contains(vk::QueueFlags::TRANSFER)
+				&& !properties.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+			.map(|index| index as u32);
+
+		if let (Some(graphics), Some(presentation), Some(transfer)) = (graphics, presentation, transfer)
 		{
-			Ok(Self {graphics, presentation})
+			Ok(Self {graphics, presentation, transfer})
 		}
 		else
 		{
@@ -586,6 +598,7 @@ unsafe fn create_logical_device(
 
 	let device = instance.create_device(data.physical_device, &info, None)?;
 	data.graphics_queue = device.get_device_queue(indices.graphics, 0);
+	data.transfer_queue = device.get_device_queue(indices.transfer, 0);
 	data.presentation_queue = device.get_device_queue(indices.presentation, 0);
 	Ok(device)
 }
@@ -670,12 +683,15 @@ unsafe fn create_swapchain(
 	let image_sharing_mode = if indices.graphics != indices.presentation
 		{
 			queue_family_indices.push(indices.graphics);
+			queue_family_indices.push(indices.transfer);
 			queue_family_indices.push(indices.presentation);
 			vk::SharingMode::CONCURRENT
 		}
 		else
 		{
-			vk::SharingMode::EXCLUSIVE
+			queue_family_indices.push(indices.graphics);
+			queue_family_indices.push(indices.transfer);
+			vk::SharingMode::CONCURRENT
 		};
 	
 	let info = vk::SwapchainCreateInfoKHR::builder()
@@ -955,10 +971,14 @@ unsafe fn create_command_pool(
 	) -> Result<()>
 {
 	let indices = QueueFamilyIndices::get(instance, data, data.physical_device)?;
-	let info = vk::CommandPoolCreateInfo::builder()
-		.queue_family_index(indices.graphics);
 
-	data.command_pool = device.create_command_pool(&info, None)?;
+	let g_info = vk::CommandPoolCreateInfo::builder()
+		.queue_family_index(indices.graphics);
+	data.graphics_command_pool = device.create_command_pool(&g_info, None)?;
+
+	let t_info = vk::CommandPoolCreateInfo::builder()
+		.queue_family_index(indices.transfer);
+	data.transfer_command_pool = device.create_command_pool(&t_info, None)?;
 
 	Ok(())
 }
@@ -969,7 +989,7 @@ unsafe fn create_command_buffers(
 	) -> Result<()>
 {
 	let allocate_info = vk::CommandBufferAllocateInfo::builder()
-		.command_pool(data.command_pool)
+		.command_pool(data.graphics_command_pool)
 		.level(vk::CommandBufferLevel::PRIMARY)
 		.command_buffer_count(data.framebuffers.len() as u32);
 
