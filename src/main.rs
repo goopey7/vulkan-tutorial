@@ -1784,7 +1784,7 @@ unsafe fn create_image_view(
 	let info = vk::ImageViewCreateInfo::builder()
 		.image(image)
 		.view_type(vk::ImageViewType::_2D)
-		.format(vk::Format::R8G8B8A8_SRGB)
+		.format(format)
 		.subresource_range(subresource_range);
 
 	Ok(device.create_image_view(&info, None)?)
