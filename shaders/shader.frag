@@ -1,8 +1,10 @@
 #version 450
 
-// input color from vertex shader
+// input color and texture coord from vertex shader
 layout(location=0) in vec3 fragColor;
 layout(location=1) in vec2 fragTexCoord;
+
+// uniform binding for sampler
 layout(binding=1) uniform sampler2D texSampler;
 
 // create variable for framebuffer (we have one so index 0)
