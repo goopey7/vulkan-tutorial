@@ -131,7 +131,7 @@ impl App
 		create_render_pass(&instance, &device, &mut data)?;
 		create_descriptor_set_layout(&device, &mut data)?;
 		create_pipeline(&device, &mut data)?;
-		create_command_pool(&instance, &device, &mut data)?;
+		create_command_pools(&instance, &device, &mut data)?;
 		create_color_objects(&instance, &device, &mut data)?;
 		create_depth_objects(&instance, &device, &mut data)?;
 		create_framebuffers(&device, &mut data)?;
@@ -180,6 +180,7 @@ impl App
 				.wait_for_fences(&[image_in_flight], true, u64::max_value())?;
 		}
 
+		self.update_command_buffer(image_index)?;
 		self.update_uniform_buffer(image_index)?;
 
 		let wait_semaphores = &[self.data.image_available_semaphores[self.frame]];
@@ -253,6 +254,85 @@ impl App
 
 		self.device.unmap_memory(self.data.uniform_buffers_memory[image_index]);
 
+		Ok(())
+	}
+
+	unsafe fn update_command_buffer(&mut self, image_index: usize) -> Result<()>
+	{
+		let command_buffer = self.data.command_buffers[image_index];
+
+		self.device.reset_command_buffer(
+			command_buffer,
+			vk::CommandBufferResetFlags::empty(),
+		)?;
+
+		let time = self.start.elapsed().as_secs_f32();
+		let model = glm::rotate(
+			&glm::identity(),
+			time * glm::radians(&glm::vec1(90.0))[0],
+			&glm::vec3(0.0,0.0,1.0)
+		);
+
+		let (_, model_bytes, _) = model.as_slice().align_to::<u8>();
+
+		let info = vk::CommandBufferBeginInfo::builder()
+			.flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+		self.device.begin_command_buffer(command_buffer, &info)?;
+
+		let render_area = vk::Rect2D::builder()
+			.offset(vk::Offset2D::default())
+			.extent(self.data.swapchain_extent);
+
+		let color_clear_value = vk::ClearValue {
+			color: vk::ClearColorValue {
+				float32: [0.0,0.0,0.0,1.0],
+			}
+		};
+
+		let depth_clear_value = vk::ClearValue {
+			depth_stencil: vk::ClearDepthStencilValue {
+				depth: 1.0,
+				stencil: 0,
+			}
+		};
+		
+		let clear_values = &[color_clear_value, depth_clear_value];
+
+		let info = vk::RenderPassBeginInfo::builder()
+			.render_pass(self.data.render_pass)
+			.framebuffer(self.data.framebuffers[image_index])
+			.render_area(render_area)
+			.clear_values(clear_values);
+
+		self.device.cmd_begin_render_pass(command_buffer, &info, vk::SubpassContents::INLINE);
+		self.device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.data.pipeline);
+		self.device.cmd_bind_vertex_buffers(command_buffer, 0, &[self.data.vertex_buffer], &[0]);
+		self.device.cmd_bind_index_buffer(command_buffer, self.data.index_buffer, 0, vk::IndexType::UINT32);
+		self.device.cmd_bind_descriptor_sets(
+			command_buffer,
+			vk::PipelineBindPoint::GRAPHICS,
+			self.data.pipeline_layout,
+			0,
+			&[self.data.descriptor_sets[image_index]],
+			&[]);
+		self.device.cmd_push_constants(
+			command_buffer,
+			self.data.pipeline_layout,
+			vk::ShaderStageFlags::VERTEX,
+			0,
+			model_bytes,
+		);
+		self.device.cmd_push_constants(
+			command_buffer,
+			self.data.pipeline_layout,
+			vk::ShaderStageFlags::FRAGMENT,
+			64,
+			&0.25f32.to_ne_bytes()[..],
+		);
+		self.device.cmd_draw_indexed(command_buffer, self.data.indices.len() as u32, 1, 0, 0, 0);
+		self.device.cmd_end_render_pass(command_buffer);
+		self.device.end_command_buffer(command_buffer)?;
 		Ok(())
 	}
 
@@ -1116,7 +1196,7 @@ unsafe fn create_framebuffers(
 	Ok(())
 }
 
-unsafe fn create_command_pool(
+unsafe fn create_command_pools(
 	instance: &Instance,
 	device: &Device,
 	data: &mut AppData,
@@ -1125,12 +1205,15 @@ unsafe fn create_command_pool(
 	let indices = QueueFamilyIndices::get(instance, data, data.physical_device)?;
 
 	let g_info = vk::CommandPoolCreateInfo::builder()
-		.queue_family_index(indices.graphics);
+		.queue_family_index(indices.graphics)
+		.flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
 	data.graphics_command_pool = device.create_command_pool(&g_info, None)?;
 
 	let t_info = vk::CommandPoolCreateInfo::builder()
 		.queue_family_index(indices.transfer)
-		.flags(vk::CommandPoolCreateFlags::TRANSIENT);
+		.flags(
+			vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER
+				| vk::CommandPoolCreateFlags::TRANSIENT);
 	data.transfer_command_pool = device.create_command_pool(&t_info, None)?;
 
 	Ok(())
@@ -1148,68 +1231,6 @@ unsafe fn create_command_buffers(
 
 	data.command_buffers = device.allocate_command_buffers(&allocate_info)?;
 
-	let model = glm::rotate(&glm::identity(), 0.0f32, &glm::vec3(0.0,0.0,1.0));
-	let (_, model_bytes, _) = model.as_slice().align_to::<u8>();
-	for (i, command_buffer) in data.command_buffers.iter().enumerate()
-	{
-		let info = vk::CommandBufferBeginInfo::builder();
-
-		device.begin_command_buffer(*command_buffer, &info)?;
-
-		let render_area = vk::Rect2D::builder()
-			.offset(vk::Offset2D::default())
-			.extent(data.swapchain_extent);
-
-		let color_clear_value = vk::ClearValue {
-			color: vk::ClearColorValue {
-				float32: [0.0,0.0,0.0,1.0],
-			}
-		};
-
-		let depth_clear_value = vk::ClearValue {
-			depth_stencil: vk::ClearDepthStencilValue {
-				depth: 1.0,
-				stencil: 0,
-			}
-		};
-		
-		let clear_values = &[color_clear_value, depth_clear_value];
-
-		let info = vk::RenderPassBeginInfo::builder()
-			.render_pass(data.render_pass)
-			.framebuffer(data.framebuffers[i])
-			.render_area(render_area)
-			.clear_values(clear_values);
-
-		device.cmd_begin_render_pass(*command_buffer, &info, vk::SubpassContents::INLINE);
-		device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, data.pipeline);
-		device.cmd_bind_vertex_buffers(*command_buffer, 0, &[data.vertex_buffer], &[0]);
-		device.cmd_bind_index_buffer(*command_buffer, data.index_buffer, 0, vk::IndexType::UINT32);
-		device.cmd_bind_descriptor_sets(
-			*command_buffer,
-			vk::PipelineBindPoint::GRAPHICS,
-			data.pipeline_layout,
-			0,
-			&[data.descriptor_sets[i]],
-			&[]);
-		device.cmd_push_constants(
-			*command_buffer,
-			data.pipeline_layout,
-			vk::ShaderStageFlags::VERTEX,
-			0,
-			model_bytes,
-		);
-		device.cmd_push_constants(
-			*command_buffer,
-			data.pipeline_layout,
-			vk::ShaderStageFlags::FRAGMENT,
-			64,
-			&0.25f32.to_ne_bytes()[..],
-		);
-		device.cmd_draw_indexed(*command_buffer, data.indices.len() as u32, 1, 0, 0, 0);
-		device.cmd_end_render_pass(*command_buffer);
-		device.end_command_buffer(*command_buffer)?;
-	}
 
 	Ok(())
 }
