@@ -180,7 +180,7 @@ impl App
 				.wait_for_fences(&[image_in_flight], true, u64::max_value())?;
 		}
 
-		self.update_command_buffer(image_index)?;
+		self.update_command_buffer(self.data.graphics_command_pool, image_index)?;
 		self.update_uniform_buffer(image_index)?;
 
 		let wait_semaphores = &[self.data.image_available_semaphores[self.frame]];
@@ -257,14 +257,18 @@ impl App
 		Ok(())
 	}
 
-	unsafe fn update_command_buffer(&mut self, image_index: usize) -> Result<()>
+	unsafe fn update_command_buffer(&mut self, pool: vk::CommandPool, image_index: usize) -> Result<()>
 	{
-		let command_buffer = self.data.command_buffers[image_index];
+		let previous = self.data.command_buffers[image_index];
+		self.device.free_command_buffers(pool, &[previous]);
 
-		self.device.reset_command_buffer(
-			command_buffer,
-			vk::CommandBufferResetFlags::empty(),
-		)?;
+		let allocate_info = vk::CommandBufferAllocateInfo::builder()
+			.command_pool(pool)
+			.level(vk::CommandBufferLevel::PRIMARY)
+			.command_buffer_count(1);
+
+		let command_buffer = self.device.allocate_command_buffers(&allocate_info)?[0];
+		self.data.command_buffers[image_index] = command_buffer;
 
 		let time = self.start.elapsed().as_secs_f32();
 		let model = glm::rotate(
@@ -1206,14 +1210,12 @@ unsafe fn create_command_pools(
 
 	let g_info = vk::CommandPoolCreateInfo::builder()
 		.queue_family_index(indices.graphics)
-		.flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+		.flags(vk::CommandPoolCreateFlags::TRANSIENT);
 	data.graphics_command_pool = device.create_command_pool(&g_info, None)?;
 
 	let t_info = vk::CommandPoolCreateInfo::builder()
 		.queue_family_index(indices.transfer)
-		.flags(
-			vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER
-				| vk::CommandPoolCreateFlags::TRANSIENT);
+		.flags(vk::CommandPoolCreateFlags::TRANSIENT);
 	data.transfer_command_pool = device.create_command_pool(&t_info, None)?;
 
 	Ok(())
