@@ -6,7 +6,7 @@
 )]
 
 use winit::dpi::LogicalSize;
-use winit::event::{Event, WindowEvent};
+use winit::event::{Event, WindowEvent, ElementState, VirtualKeyCode};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{Window, WindowBuilder};
 
@@ -75,6 +75,18 @@ fn main() -> Result<()>
 			{
 				unsafe { app.render(&window) }.unwrap()
 			},
+			Event::WindowEvent {event: WindowEvent::KeyboardInput { input, .. }, .. } =>
+			{
+				if input.state == ElementState::Pressed
+				{
+					match input.virtual_keycode
+					{
+						Some(VirtualKeyCode::Left) if app.models > 1 => app.models -= 1,
+						Some(VirtualKeyCode::Right) if app.models < 4 => app.models += 1,
+						_ => {}
+					}
+				}
+			},
 			// Check for resize
 			Event::WindowEvent {event: WindowEvent::Resized(size), ..} =>
 			{
@@ -118,6 +130,7 @@ struct App
 	frame: usize,
 	resized: bool,
 	start: Instant,
+	models: usize,
 }
 
 impl App
@@ -153,7 +166,7 @@ impl App
 		create_command_buffers(&device, &mut data, CommandType::Graphics)?;
 		create_command_buffers(&device, &mut data, CommandType::Transfer)?;
 		create_sync_objects(&device, &mut data)?;
-		Ok(Self {entry, instance, data, device, frame: 0, resized: false, start: Instant::now(),})
+		Ok(Self {entry, instance, data, device, frame: 0, resized: false, start: Instant::now(), models: 1})
 	}
 
 	/// Renders a frame for our Vulkan app.
@@ -234,7 +247,7 @@ impl App
 	unsafe fn update_uniform_buffer(&self, image_index: usize) -> Result<()>
 	{
 		let view = glm::look_at(
-			&glm::vec3(2.0,2.0,2.0),
+			&glm::vec3(6.0,0.0,2.0),
 			&glm::vec3(0.0,0.0,0.0),
 			&glm::vec3(0.0,0.0,1.0),
 		);
@@ -290,15 +303,6 @@ impl App
 			CommandType::Transfer => self.data.transfer_command_buffers[image_index],
 		};
 
-		let time = self.start.elapsed().as_secs_f32();
-		let model = glm::rotate(
-			&glm::identity(),
-			time * glm::radians(&glm::vec1(90.0))[0],
-			&glm::vec3(0.0,0.0,1.0)
-		);
-
-		let (_, model_bytes, _) = model.as_slice().align_to::<u8>();
-
 		let info = vk::CommandBufferBeginInfo::builder()
 			.flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
@@ -329,7 +333,72 @@ impl App
 			.render_area(render_area)
 			.clear_values(clear_values);
 
-		self.device.cmd_begin_render_pass(command_buffer, &info, vk::SubpassContents::INLINE);
+		self.device.cmd_begin_render_pass(command_buffer, &info, vk::SubpassContents::SECONDARY_COMMAND_BUFFERS);
+
+		let secondary_command_buffers = (0..self.models)
+			.map(|model_index| self.update_secondary_command_buffer(image_index, model_index))
+			.collect::<Result<Vec<_>, _>>()?;
+
+		self.device.cmd_execute_commands(command_buffer, &secondary_command_buffers);
+
+		self.device.cmd_end_render_pass(command_buffer);
+		self.device.end_command_buffer(command_buffer)?;
+		Ok(())
+	}
+
+	unsafe fn update_secondary_command_buffer(
+		&mut self,
+		image_index: usize,
+		model_index: usize,
+		) -> Result<vk::CommandBuffer>
+	{
+		self.data.secondary_command_buffers.resize_with(image_index + 1, Vec::new);
+		let command_buffers = &mut self.data.secondary_command_buffers[image_index];
+		while model_index >= command_buffers.len()
+		{
+			let allocate_info = vk::CommandBufferAllocateInfo::builder()
+				.command_pool(self.data.graphics_command_pools[image_index])
+				.level(vk::CommandBufferLevel::SECONDARY)
+				.command_buffer_count(1);
+
+			let command_buffer = self.device.allocate_command_buffers(&allocate_info)?[0];
+
+			command_buffers.push(command_buffer);
+		}
+
+		let command_buffer = command_buffers[model_index];
+
+		let time = self.start.elapsed().as_secs_f32();
+
+		let y = (((model_index % 2) as f32) * 2.5) - 1.25;
+		let z = (((model_index / 2) as f32) * -2.0) + 1.0;
+
+		let model = glm::translate(
+			&glm::identity(),
+			&glm::vec3(0.0,y,z)
+		);
+
+		let model = glm::rotate(
+			&model,
+			time * glm::radians(&glm::vec1(90.0))[0],
+			&glm::vec3(0.0,0.0,1.0));
+
+		let (_, model_bytes, _) = model.as_slice().align_to::<u8>();
+
+		let opacity = (model_index + 1) as f32 * 0.25;
+		let opacity_bytes = &opacity.to_ne_bytes();
+
+		let inheritence_info = vk::CommandBufferInheritanceInfo::builder()
+			.render_pass(self.data.render_pass)
+			.subpass(0)
+			.framebuffer(self.data.framebuffers[image_index]);
+
+		let info = vk::CommandBufferBeginInfo::builder()
+			.flags(vk::CommandBufferUsageFlags::RENDER_PASS_CONTINUE)
+			.inheritance_info(&inheritence_info);
+
+		self.device.begin_command_buffer(command_buffer, &info)?;
+
 		self.device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, self.data.pipeline);
 		self.device.cmd_bind_vertex_buffers(command_buffer, 0, &[self.data.vertex_buffer], &[0]);
 		self.device.cmd_bind_index_buffer(command_buffer, self.data.index_buffer, 0, vk::IndexType::UINT32);
@@ -352,12 +421,13 @@ impl App
 			self.data.pipeline_layout,
 			vk::ShaderStageFlags::FRAGMENT,
 			64,
-			&0.25f32.to_ne_bytes()[..],
+			opacity_bytes,
 		);
 		self.device.cmd_draw_indexed(command_buffer, self.data.indices.len() as u32, 1, 0, 0, 0);
-		self.device.cmd_end_render_pass(command_buffer);
+
 		self.device.end_command_buffer(command_buffer)?;
-		Ok(())
+
+		Ok(command_buffer)
 	}
 
 	/// Recreate swapchain
@@ -488,6 +558,7 @@ struct AppData
 	graphics_command_pool: vk::CommandPool,
 	graphics_command_pools: Vec<vk::CommandPool>,
 	graphics_command_buffers: Vec<vk::CommandBuffer>,
+	secondary_command_buffers: Vec<Vec<vk::CommandBuffer>>,
 	transfer_command_pool: vk::CommandPool,
 	transfer_command_pools: Vec<vk::CommandPool>,
 	transfer_command_buffers: Vec<vk::CommandBuffer>,
@@ -1296,6 +1367,8 @@ unsafe fn create_command_buffers(
 			CommandType::Transfer => data.transfer_command_buffers.push(command_buffer),
 		}
 	}
+
+	data.secondary_command_buffers = vec![vec![]; data.swapchain_images.len()];
 
 	Ok(())
 }
