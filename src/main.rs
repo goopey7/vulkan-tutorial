@@ -113,12 +113,6 @@ fn main() -> Result<()>
 	});
 }
 
-enum CommandType
-{
-	Graphics,
-	Transfer,
-}
-
 /// Our Vulkan app.
 #[derive(Clone, Debug)]
 struct App
@@ -163,8 +157,7 @@ impl App
 		create_uniform_buffers(&instance, &device, &mut data)?;
 		create_descriptor_pool(&device, &mut data)?;
 		create_descriptor_sets(&device, &mut data)?;
-		create_command_buffers(&device, &mut data, CommandType::Graphics)?;
-		create_command_buffers(&device, &mut data, CommandType::Transfer)?;
+		create_command_buffers(&device, &mut data)?;
 		create_sync_objects(&device, &mut data)?;
 		Ok(Self {entry, instance, data, device, frame: 0, resized: false, start: Instant::now(), models: 1})
 	}
@@ -200,7 +193,7 @@ impl App
 				.wait_for_fences(&[image_in_flight], true, u64::max_value())?;
 		}
 
-		self.update_command_buffer(image_index, CommandType::Graphics)?;
+		self.update_command_buffer(image_index)?;
 		self.update_uniform_buffer(image_index)?;
 
 		let wait_semaphores = &[self.data.image_available_semaphores[self.frame]];
@@ -280,28 +273,13 @@ impl App
 	unsafe fn update_command_buffer(
 		&mut self,
 		image_index: usize,
-		command_type: CommandType,
 		) -> Result<()>
 	{
-		let command_pool = match command_type
-		{
-			CommandType::Graphics =>
-			{
-				self.data.graphics_command_pools[image_index]
-			},
-			CommandType::Transfer =>
-			{
-				self.data.transfer_command_pools[image_index]
-			},
-		};
+		let command_pool = self.data.graphics_command_pools[image_index];
 
 		self.device.reset_command_pool(command_pool, vk::CommandPoolResetFlags::empty())?;
 
-		let command_buffer = match command_type
-		{
-			CommandType::Graphics => self.data.graphics_command_buffers[image_index],
-			CommandType::Transfer => self.data.transfer_command_buffers[image_index],
-		};
+		let command_buffer = self.data.graphics_command_buffers[image_index];
 
 		let info = vk::CommandBufferBeginInfo::builder()
 			.flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
@@ -445,8 +423,7 @@ impl App
 		create_uniform_buffers(&self.instance, &self.device, &mut self.data)?;
 		create_descriptor_pool(&self.device, &mut self.data)?;
 		create_descriptor_sets(&self.device, &mut self.data)?;
-		create_command_buffers(&self.device, &mut self.data, CommandType::Graphics)?;
-		create_command_buffers(&self.device, &mut self.data, CommandType::Transfer)?;
+		create_command_buffers(&self.device, &mut self.data)?;
 		self.data
 			.images_in_flight
 			.resize(self.data.swapchain_images.len(), vk::Fence::null());
@@ -488,10 +465,6 @@ impl App
 		self.destroy_swapchain();
 
 		self.data.graphics_command_pools
-			.iter()
-			.for_each(|pool| self.device.destroy_command_pool(*pool, None));
-
-		self.data.transfer_command_pools
 			.iter()
 			.for_each(|pool| self.device.destroy_command_pool(*pool, None));
 
@@ -560,8 +533,6 @@ struct AppData
 	graphics_command_buffers: Vec<vk::CommandBuffer>,
 	secondary_command_buffers: Vec<Vec<vk::CommandBuffer>>,
 	transfer_command_pool: vk::CommandPool,
-	transfer_command_pools: Vec<vk::CommandPool>,
-	transfer_command_buffers: Vec<vk::CommandBuffer>,
 	image_available_semaphores: Vec<vk::Semaphore>,
 	render_finished_semaphores: Vec<vk::Semaphore>,
 	in_flight_fences: Vec<vk::Fence>,
@@ -1332,9 +1303,6 @@ unsafe fn create_command_pools(
 	{
 		let g_command_pool = create_command_pool(instance, device, data, indices.graphics)?;
 		data.graphics_command_pools.push(g_command_pool);
-
-		let t_command_pool = create_command_pool(instance, device, data, indices.transfer)?;
-		data.transfer_command_pools.push(t_command_pool);
 	}
 
 	Ok(())
@@ -1343,17 +1311,12 @@ unsafe fn create_command_pools(
 unsafe fn create_command_buffers(
 	device: &Device,
 	data: &mut AppData,
-	command_type: CommandType
 	) -> Result<()>
 {
 	let num_images = data.swapchain_images.len();
 	for image_index in 0..num_images
 	{
-		let command_pool = match command_type
-		{
-			CommandType::Graphics => data.graphics_command_pools[image_index],
-			CommandType::Transfer => data.transfer_command_pools[image_index],
-		};
+		let command_pool = data.graphics_command_pools[image_index];
 
 		let allocate_info = vk::CommandBufferAllocateInfo::builder()
 			.command_pool(command_pool)
@@ -1361,11 +1324,7 @@ unsafe fn create_command_buffers(
 			.command_buffer_count(1);
 
 		let command_buffer = device.allocate_command_buffers(&allocate_info)?[0];
-		match command_type
-		{
-			CommandType::Graphics => data.graphics_command_buffers.push(command_buffer),
-			CommandType::Transfer => data.transfer_command_buffers.push(command_buffer),
-		}
+		data.graphics_command_buffers.push(command_buffer);
 	}
 
 	data.secondary_command_buffers = vec![vec![]; data.swapchain_images.len()];
